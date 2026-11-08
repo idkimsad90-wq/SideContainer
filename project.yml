@@ -1,4 +1,4 @@
-name: Sidelivebitc
+name: SideContainer
 options:
   bundleIdPrefix: com.custom
   deploymentTarget:
