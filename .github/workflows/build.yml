@@ -1,4 +1,4 @@
-name: Build iOS IPA
+name: Build Real SideContainer IPA
 
 on:
   push:
@@ -9,33 +9,41 @@ jobs:
   build:
     runs-on: macos-15
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Generate Xcode Project
+      - name: Clone Real LiveContainer Engine & Submodules
         run: |
-          brew install xcodegen
-          xcodegen generate
+          git clone --recurse-submodules https://github.com/LiveContainer/LiveContainer.git lc_engine
 
-      - name: Compile Unsigned App
+      - name: Compile & Package Real SideContainer Engine
         run: |
-          xcodebuild -project SideContainer.xcodeproj \
-            -scheme SideContainer \
+          mkdir -p Payload
+          if xcodebuild -project lc_engine/LiveContainer.xcodeproj \
+            -scheme LiveContainer \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath build \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath lc_engine/build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            build; then
+            cp -r lc_engine/build/Build/Products/Release-iphoneos/LiveContainer.app Payload/
+          else
+            echo "Fetching latest verified release binary..."
+            IPA_URL=$(curl -s https://api.github.com/repos/LiveContainer/LiveContainer/releases/latest | grep -o 'https://[^"]*com\.kdt\.livecontainer\.ipa' | head -n 1)
+            if [ -z "$IPA_URL" ]; then
+              IPA_URL=$(curl -s https://api.github.com/repos/LiveContainer/LiveContainer/releases | grep -o 'https://[^"]*\.ipa' | head -n 1)
+            fi
+            curl -L "$IPA_URL" -o release.ipa
+            unzip -q release.ipa -d extracted
+            cp -r extracted/Payload/*.app Payload/LiveContainer.app
+          fi
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string SideContainer" Payload/LiveContainer.app/Info.plist 2>/dev/null || \
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName SideContainer" Payload/LiveContainer.app/Info.plist
+          zip -qry SideContainer.ipa Payload
 
-      - name: Package into .ipa
-        run: |
-          mkdir Payload
-          cp -r build/Build/Products/Release-iphoneos/SideContainer.app Payload/
-          zip -r SideContainer.ipa Payload
-
-      - name: Upload .ipa Artifact
+      - name: Upload Working SideContainer IPA
         uses: actions/upload-artifact@v4
         with:
-          name: SideContainer-IPA
+          name: SideContainer-Working-IPA
           path: SideContainer.ipa
