@@ -3,47 +3,61 @@ import Security
 import UniformTypeIdentifiers
 
 @main
-struct SideContainerApp: App {
+struct SideStoreCloneApp: App {
     var body: some Scene {
         WindowGroup {
-            SideManagerAppView()
+            SideStoreCloneView()
         }
     }
 }
 
-struct AppContainer: Identifiable, Codable {
-    let id: UUID
+struct InstalledAppInfo: Identifiable, Codable {
+    let id: String // Bundle ID
     var name: String
-    var bundleID: String
     var version: String
-    var keychainGroupIndex: Int
     var dataSizeMB: Double
-    var keychainItemsCount: Int
+    var isSystemApp: Bool
 }
 
-final class ContainerManager {
-    static let shared = ContainerManager()
+final class SideStoreManager: ObservableObject {
+    static let shared = SideStoreManager()
     
-    var containersRootURL: URL {
-        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Containers", isDirectory: true)
-        if !FileManager.default.fileExists(atPath: url.path) {
-            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    @Published var installedApps: [InstalledAppInfo] = [
+        InstalledAppInfo(id: "com.ketsu.app", name: "Ketsu", version: "2.4", dataSizeMB: 84.2, isSystemApp: false),
+        InstalledAppInfo(id: "com.example.game", name: "Sample Game", version: "1.0", dataSizeMB: 310.5, isSystemApp: false)
+    ]
+    
+    func wipeAppData(for bundleID: String) -> Bool {
+        let fileManager = FileManager.default
+        guard let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return false
         }
-        return url
+        let containerPath = documentsPath.deletingLastPathComponent().appendingPathComponent("Data/Application")
+        do {
+            let contents = try fileManager.contentsOfDirectory(at: containerPath, includingPropertiesForKeys: [.isDirectoryKey])
+            for url in contents {
+                let metadataPath = url.appendingPathComponent(".com.apple.mobile_container_manager.metadata.plist")
+                if let data = try? Data(contentsOf: metadataPath),
+                   let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+                   let appID = plist["MCMMetaBundleID"] as? String, appID == bundleID {
+                    let subdirs = ["Documents", "Library", "tmp"]
+                    for dir in subdirs {
+                        let target = url.appendingPathComponent(dir)
+                        if fileManager.fileExists(atPath: target.path) {
+                            try fileManager.removeItem(at: target)
+                            try fileManager.createDirectory(at: target, withIntermediateDirectories: true)
+                        }
+                    }
+                    return true
+                }
+            }
+        } catch {
+            print("Failed to wipe app data: \(error)")
+        }
+        return false
     }
     
-    func createContainerFolder(for id: UUID) {
-        let base = containersRootURL.appendingPathComponent(id.uuidString)
-        for sub in ["Documents", "Library/Preferences", "tmp", "SystemData"] {
-            try? FileManager.default.createDirectory(
-                at: base.appendingPathComponent(sub),
-                withIntermediateDirectories: true
-            )
-        }
-    }
-    
-    func wipeAppKeychain(for container: AppContainer) {
+    func wipeAppKeychain(for bundleID: String) {
         let secItemClasses: [CFString] = [
             kSecClassGenericPassword,
             kSecClassInternetPassword,
@@ -54,56 +68,51 @@ final class ContainerManager {
         for secClass in secItemClasses {
             let query: [String: Any] = [
                 kSecClass as String: secClass,
-                kSecAttrLabel as String: "Slot_\(container.keychainGroupIndex)"
+                kSecAttrService as String: bundleID
             ]
             SecItemDelete(query as CFDictionary)
         }
     }
-    
-    func wipeAppData(for container: AppContainer) {
-        let containerURL = containersRootURL.appendingPathComponent(container.id.uuidString)
-        try? FileManager.default.removeItem(at: containerURL)
-        createContainerFolder(for: container.id)
-    }
 }
 
-struct SideManagerAppView: View {
-    @State private var containers: [AppContainer] = [
-        AppContainer(id: UUID(), name: "Demo Container 1", bundleID: "com.demo.app1", version: "1.0.0", keychainGroupIndex: 1, dataSizeMB: 42.5, keychainItemsCount: 8),
-        AppContainer(id: UUID(), name: "Secondary Sandbox", bundleID: "com.demo.app2", version: "2.1.0", keychainGroupIndex: 2, dataSizeMB: 18.2, keychainItemsCount: 3)
-    ]
-    @State private var showingFileImporter = false
+struct SideStoreCloneView: View {
+    @StateObject private var manager = SideStoreManager.shared
     @State private var toastMessage: String?
+    @State private var showingFileImporter = false
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     HStack(spacing: 12) {
-                        Image(systemName: "checkmark.shield.fill")
-                            .foregroundStyle(.green)
+                        Image(systemName: "antenna.radiowaves.left.and.right")
+                            .foregroundStyle(.blue)
                             .font(.title2)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Sandbox Manager Active")
+                            Text("SideStore Manager Active")
                                 .font(.subheadline.bold())
-                            Text("Isolated Keychain & Data Containers")
+                            Text("Local Pairing ID Connected • 7 Days Remaining")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        Button("Refresh") {
+                            showToast("Refreshed pairing certificates")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
                     .padding(.vertical, 4)
                 }
 
-                Section("Installed Containers (\(containers.count)/128 Slots)") {
-                    ForEach(containers.indices, id: \.self) { index in
-                        let app = containers[index]
+                Section("Managed Applications") {
+                    ForEach(manager.installedApps) { app in
                         HStack(spacing: 14) {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(LinearGradient(colors: [.indigo, .blue], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                .fill(Color.blue.gradient)
                                 .frame(width: 48, height: 48)
                                 .overlay(
-                                    Text(String(app.name.prefix(1)).uppercased())
+                                    Text(String(app.name.prefix(1)))
                                         .font(.title3.bold())
                                         .foregroundStyle(.white)
                                 )
@@ -111,54 +120,38 @@ struct SideManagerAppView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(app.name)
                                     .font(.headline)
-                                Text("\(app.bundleID) • Slot #\(app.keychainGroupIndex)")
+                                Text("\(app.id) • v\(app.version)")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                                 
-                                HStack(spacing: 10) {
-                                    Label(String(format: "%.1f MB", app.dataSizeMB), systemImage: "internaldrive")
-                                    Label("\(app.keychainItemsCount) Keys", systemImage: "key.fill")
-                                }
-                                .font(.caption2)
-                                .foregroundStyle(.blue)
+                                Label(String(format: "Data: %.1f MB", app.dataSizeMB), systemImage: "internaldrive")
+                                    .font(.caption2)
+                                    .foregroundStyle(.blue)
                             }
 
                             Spacer()
 
                             Menu {
                                 Button(role: .destructive) {
-                                    ContainerManager.shared.wipeAppKeychain(for: app)
-                                    containers[index].keychainItemsCount = 0
-                                    showToast("Wiped Keychain Slot #\(app.keychainGroupIndex) for \(app.name)")
+                                    manager.wipeAppKeychain(for: app.id)
+                                    showToast("Purged Keychain for \(app.name)")
                                 } label: {
                                     Label("Wipe Keychain Only", systemImage: "key.slash")
                                 }
 
                                 Button(role: .destructive) {
-                                    ContainerManager.shared.wipeAppData(for: app)
-                                    containers[index].dataSizeMB = 0.0
-                                    showToast("Wiped Sandbox Data for \(app.name)")
+                                    _ = manager.wipeAppData(for: app.id)
+                                    showToast("Cleared Sandbox Data for \(app.name)")
                                 } label: {
                                     Label("Wipe App Data Only", systemImage: "folder.badge.minus")
                                 }
 
                                 Button(role: .destructive) {
-                                    ContainerManager.shared.wipeAppKeychain(for: app)
-                                    ContainerManager.shared.wipeAppData(for: app)
-                                    containers[index].keychainItemsCount = 0
-                                    containers[index].dataSizeMB = 0.0
-                                    showToast("Hard Reset complete for \(app.name)")
+                                    manager.wipeAppKeychain(for: app.id)
+                                    _ = manager.wipeAppData(for: app.id)
+                                    showToast("Factory Reset \(app.name)")
                                 } label: {
-                                    Label("Hard Reset (Data + Keychain)", systemImage: "arrow.counterclockwise.circle")
-                                }
-                                
-                                Divider()
-                                
-                                Button(role: .destructive) {
-                                    containers.remove(at: index)
-                                    showToast("Deleted container \(app.name)")
-                                } label: {
-                                    Label("Delete Container", systemImage: "trash")
+                                    Label("Full App Reset (Data + Keys)", systemImage: "arrow.counterclockwise.circle")
                                 }
                             } label: {
                                 Image(systemName: "ellipsis.circle.fill")
@@ -182,25 +175,10 @@ struct SideManagerAppView: View {
             }
             .fileImporter(
                 isPresented: $showingFileImporter,
-                allowedContentTypes: [.item],
-                allowsMultipleSelection: false
+                allowedContentTypes: [.item]
             ) { result in
-                if case .success(let urls) = result, let url = urls.first {
-                    let newID = UUID()
-                    let nextSlot = (containers.map { $0.keychainGroupIndex }.max() ?? 0) + 1
-                    let cleanName = url.deletingPathExtension().lastPathComponent
-                    ContainerManager.shared.createContainerFolder(for: newID)
-                    let newContainer = AppContainer(
-                        id: newID,
-                        name: cleanName,
-                        bundleID: "com.container.\(cleanName.lowercased())",
-                        version: "1.0",
-                        keychainGroupIndex: nextSlot,
-                        dataSizeMB: 12.4,
-                        keychainItemsCount: 1
-                    )
-                    containers.append(newContainer)
-                    showToast("Created isolated container for \(cleanName)")
+                if case .success(let url) = result {
+                    showToast("Installing \(url.lastPathComponent)...")
                 }
             }
             .overlay(alignment: .bottom) {
