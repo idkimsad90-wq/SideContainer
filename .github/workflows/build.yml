@@ -1,4 +1,4 @@
-name: Build Clean SideContainaer IPA
+name: Build Clean SideContainer IPA
 
 on:
   push:
